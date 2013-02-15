@@ -1,36 +1,93 @@
+/**
+ * Find first occurence of possible separator in given string
+ * and return separator's position and size in chars or null
+ */
+function findSeparator(str) {
+   // care - minus vs hyphen
+   var separators = [' - ', ' – ', '-', '–', ':'];
+
+   for (i in separators) {
+      var sep = separators[i];
+      var index = str.indexOf(sep);
+      if (index > -1)
+         return { index: index, length: sep.length };
+   }
+
+   return null;
+}
+
+/**
+ * Parse given string into artist and track, assume common order Art - Ttl
+ * @return {artist, track}
+ */
+function parseInfo(artistTitle) {
+   var artist = '';
+   var track = '';
+
+   var separator = findSeparator(artistTitle);
+   if (separator == null)
+      return { artist: '', track: '' };
+
+   artist = artistTitle.substr(0, separator.index);
+   track = artistTitle.substr(separator.index + separator.length);
+
+   return cleanArtistTrack(artist, track);
+}
+
+
+/**
+ * Clean non-informative garbage from title
+ */
+function cleanArtistTrack(artist, track) {
+
+   // Do some cleanup
+   artist = artist.replace(/^\s+|\s+$/g,'');
+   track = track.replace(/^\s+|\s+$/g,'');
+
+   // Strip crap
+   track = track.replace(/\s*\*+\s?\S+\s?\*+$/, ''); // **NEW**
+   track = track.replace(/\s*\[[^\]]+\]$/, ''); // [whatever]
+   track = track.replace(/\s*\([^\)]*version\)$/i, ''); // (whatever version)
+   track = track.replace(/\s*\.(avi|wmv|mpg|mpeg|flv)$/i, ''); // video extensions
+   track = track.replace(/\s*(of+icial\s*)?(music\s*)?video/i, ''); // (official)? (music)? video
+   track = track.replace(/\s*\(\s*of+icial\s*\)/i, ''); // (official)
+   track = track.replace(/\s*\(\s*[0-9]{4}\s*\)/i, ''); // (1999)
+   track = track.replace(/\s+\(\s*(HD|HQ)\s*\)$/, ''); // HD (HQ)
+   track = track.replace(/\s+(HD|HQ)\s*$/, ''); // HD (HQ)
+   track = track.replace(/\s*video\s*clip/i, ''); // video clip
+   track = track.replace(/\s+\(?live\)?$/i, ''); // live
+   track = track.replace(/\(\s*\)/, ''); // Leftovers after e.g. (official video)
+   track = track.replace(/^(|.*\s)"(.*)"(\s.*|)$/, '$2'); // Artist - The new "Track title" featuring someone
+   track = track.replace(/^(|.*\s)'(.*)'(\s.*|)$/, '$2'); // 'Track title'
+   track = track.replace(/^[\/\s,:;~-]+/, ''); // trim starting white chars and dash
+   track = track.replace(/[\/\s,:;~-]+$/, ''); // trim trailing white chars and dash
+
+   return {artist: artist, track: track};
+}
+
+
 (function() {
     var options;
     var current = {};
 
-    var track = function(context) {
-        var player = $(context);
-        if (player.hasClass('set'))
-            return $('li.playing .info a', player).text();
+    var song = function(ptitle) {
+        var title = ptitle.split(' by ');
+        var parsedInfo = parseInfo(title[0]);
 
-        var title = $('.soundTitle__title', player);
-        if (title.length)
-            return title.text();
+        if (parsedInfo.artist === '') {
+            parsedInfo.track = title[0];
+            parsedInfo.artist = title[1];
+        }
 
-        else
-            return $('.info-header h3 a, .info-header h1 em', player).text();
+        return {
+            artist: parsedInfo.artist,
+            track: parsedInfo.track,
+            duration: duration(title[0])
+        };
     };
 
-    var artist = function(context) {
-        var node = $('.info-header .user-name', context);
-        if (node.length)
-            return node[0].text;
-
-        node = $('.soundTitle__username', context);
-        if (node.length)
-            return node[0].text;
-    };
-
-    var duration = function(context) {
-        var node = $('span.duration', context);
-        if (node.length)
-            return parseInt($(node).attr('title').substring(2), 10);
-
-        node = $('.timeIndicator__total', context);
+    var duration = function(title) {
+        node = $('.sound.playing').not('.playlist').find('.timeIndicator__total');
         if (node.length) {
             // time is given as h.m.s
             var digits = node[0].innerHTML.split(/\D/),
@@ -46,79 +103,38 @@
             }
             return seconds;
         }
-    };
-
-    var song = function(context) {
-        return {
-               'track': track(context),
-              'artist': artist(context),
-            'duration': duration(context)
-        };
-    };
-
-    var container = function(context) {
-        var parent;
-        parent = $(context).closest('li.set')[0] ||  // 'old' soundcloud
-                 $(context).closest('div.player')[0] ||
-                 $(context).closest('div.sound.playing')[0];  // 'new' ...
-
-        if (!parent) {
-            // Couldn't find container element for this song...
-        }
-
-        return parent;
+        // if unknown duration, assume 2 minutes
+        return 120;
     };
 
     $(document).ready(function() {
-        var selectors = 'div.timeIndicator__current, .timecodes .editable';
-
-        $(selectors).live('DOMSubtreeModified', function() {
-            var next = $(this).hasClass('timeIndicator__current');
-
-            var parent = $(this).closest('.playing');
-            if (!parent.length)
+        var current_title = '';
+        $('title').live('DOMSubtreeModified', function() {
+            var title = $(this).text();
+            if (title[0] !== '▶' || current_title === title)
                 return;
+            current_title = title;
+            setTimeout(function () {
+                var s = song(title.substr(2));
 
-            if (!current || !current.context || current.context[0] != parent[0]) {
-                current = {submitted: false};
-                current.context = parent;
-            }
+                chrome.extension.sendRequest({type: 'validate',
+                                            artist: s.artist,
+                                             track: s.track},
+                function(response) {
+                    current.validated = response;
+                    if (response !== false) {
+                        chrome.extension.sendRequest({type: 'nowPlaying',
+                                                    artist: response.artist,
+                                                     track: response.track,
+                                                  duration: s.duration});
+                    }
 
-            if (!current.player) {
-                current.player = container(current.context);
-                return;
-            }
-
-            if (current.validating)
-                return;
-
-            if (next && !parent.hasClass('endOfSound'))
-                return;
-
-            var playhead = $('.playhead[style]', parent);
-            if (!next && parseFloat(playhead.attr('style').substring(6)) < 70)
-                return;
-
-            current.validating = true;
-
-            var s = song(current.player);
-            chrome.extension.sendRequest({type: 'validate',
-                                        artist: s.artist,
-                                         track: s.track},
-            function(response) {
-                current.validated = response;
-                if (response !== false) {
-                    chrome.extension.sendRequest({type: 'nowPlaying',
-                                                artist: response.artist,
-                                                 track: response.track,
-                                              duration: s.duration});
-                }
-
-                else {
-                    chrome.extension.sendRequest({type: 'nowPlaying',
-                                              duration: s.duration});
-                }
-            });
+                    else {
+                        chrome.extension.sendRequest({type: 'nowPlaying',
+                                                  duration: s.duration});
+                    }
+                });
+            }, 500);
         });
     });
 
